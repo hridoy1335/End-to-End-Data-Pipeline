@@ -1,0 +1,121 @@
+name: Databricks CI/CD (Dev → Prod)
+
+on:
+  push:
+    branches: [dev, main]
+
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "deploy or rollback"
+        required: true
+        default: "deploy"
+      version:
+        description: "tag version for rollback"
+        required: false
+
+jobs:
+
+# -------------------------
+# 1. VALIDATION
+# -------------------------
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+      - name: Validate bundle
+        run: |
+          databricks bundle validate --target dev
+          databricks bundle validate --target prod
+
+
+# -------------------------
+# 2. DEPLOY TO DEV
+# -------------------------
+  deploy-dev:
+    needs: validate
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    environment: dev
+
+    env:
+      DATABRICKS_HOST: ${{ secrets.DEV_DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DEV_DATABRICKS_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+      - name: Deploy to Dev
+        run: databricks bundle deploy --target dev
+
+
+# -------------------------
+# 3. DEPLOY TO PROD
+# -------------------------
+  deploy-prod:
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event.inputs.action != 'rollback'
+    runs-on: ubuntu-latest
+    environment: prod   # optional approval
+
+    env:
+      DATABRICKS_HOST: ${{ secrets.PROD_DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.PROD_DATABRICKS_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+      - name: Deploy to Prod
+        run: databricks bundle deploy --target prod
+
+      - name: Tag Release
+        run: |
+          VERSION="v$(date +'%Y.%m.%d.%H%M')"
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git tag $VERSION
+          git push origin $VERSION
+
+
+# -------------------------
+# 4. ROLLBACK
+# -------------------------
+  rollback:
+    if: github.event.inputs.action == 'rollback'
+    runs-on: ubuntu-latest
+    environment: prod
+
+    env:
+      DATABRICKS_HOST: ${{ secrets.PROD_DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.PROD_DATABRICKS_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Tag
+        run: |
+          git fetch --tags
+          git tag -l | grep ${{ github.event.inputs.version }}
+
+      - name: Checkout Version
+        run: git checkout tags/${{ github.event.inputs.version }}
+
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+      - name: Redeploy Old Version
+        run: databricks bundle deploy --target prod
