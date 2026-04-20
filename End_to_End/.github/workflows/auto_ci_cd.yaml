@@ -21,6 +21,11 @@ jobs:
 # -------------------------
   validate:
     runs-on: ubuntu-latest
+    
+    env:
+      DATABRICKS_HOST: ${{ secrets.DEV_DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DEV_DATABRICKS_TOKEN }}
+    
     steps:
       - uses: actions/checkout@v4
 
@@ -28,10 +33,14 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
 
-      - name: Validate bundle
-        run: |
-          databricks bundle validate --target dev
-          databricks bundle validate --target prod
+      - name: Validate Dev Bundle
+        run: databricks bundle validate --target dev
+
+      - name: Validate Prod Bundle
+        env:
+          DATABRICKS_HOST: ${{ secrets.PROD_DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.PROD_DATABRICKS_TOKEN }}
+        run: databricks bundle validate --target prod
 
 
 # -------------------------
@@ -56,6 +65,10 @@ jobs:
 
       - name: Deploy to Dev
         run: databricks bundle deploy --target dev
+
+      - name: Run Pipeline (Optional)
+        run: databricks bundle run dev_end_to_end_etl_pipeline --target dev
+        continue-on-error: true
 
 
 # -------------------------
@@ -82,12 +95,15 @@ jobs:
         run: databricks bundle deploy --target prod
 
       - name: Tag Release
+        if: success()
         run: |
           VERSION="v$(date +'%Y.%m.%d.%H%M')"
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git tag $VERSION
           git push origin $VERSION
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 
 # -------------------------
@@ -104,11 +120,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # fetch all history and tags
 
       - name: Validate Tag
         run: |
-          git fetch --tags
-          git tag -l | grep ${{ github.event.inputs.version }}
+          if ! git tag -l | grep -q "^${{ github.event.inputs.version }}$"; then
+            echo "Error: Tag ${{ github.event.inputs.version }} not found"
+            exit 1
+          fi
 
       - name: Checkout Version
         run: git checkout tags/${{ github.event.inputs.version }}
@@ -116,6 +136,9 @@ jobs:
       - name: Install Databricks CLI
         run: |
           curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+      - name: Validate Rollback Bundle
+        run: databricks bundle validate --target prod
 
       - name: Redeploy Old Version
         run: databricks bundle deploy --target prod
